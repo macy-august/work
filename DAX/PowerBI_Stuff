@@ -1,0 +1,194 @@
+Is_Linked = IF(
+    CONTAINSSTRING(Query3[Work_Note], "tylertech.cxoneexpert"), 1, 0
+)
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+
+Article Title = IF(
+    Query3[Is_Linked] = 1,
+    RIGHT([Work_Note], LEN([Work_Note]) - FIND("@@", SUBSTITUTE([Work_Note], "/", "@@", LEN([Work_Note]) - LEN(SUBSTITUTE([Work_Note], "/", ""))))),
+    "None"
+)
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+
+Case_Is_Linked = 
+CALCULATE(
+    MAX(Query3[Is_Linked]),
+    ALLEXCEPT(Query3, Query3[CRM_ID])
+)
+
+CRM_URL = MID(Query3[tyl_urlforemailtemplate], 10, FIND("'", Query3[tyl_urlforemailtemplate], 10) - 10)
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+
+Display Flag = 
+VAR CurrentCRM = Query3[crm_id]
+VAR CurrentIsLinked = Query3[Is_Linked]
+VAR CurrentCaseIsLinked = Query3[Case_Is_Linked]
+
+-- Find the rank of this row within crm_id group to determine "first" row
+VAR num = 
+    RANKX(
+        FILTER(Query3, Query3[crm_id] = CurrentCRM),
+        Query3[Index],  -- Replace with your ordering column (Date, ID, etc.)
+        ,
+        ASC
+    )
+
+RETURN
+IF (
+    CurrentIsLinked = 1,
+    1,
+    IF (
+        CurrentIsLinked = 0 && CurrentCaseIsLinked = 0 && num = 1,
+        1,
+        0
+    )
+)
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+
+Linked_Cases = 
+CALCULATE(
+    DISTINCTCOUNT(Query3[CRM_ID]),
+    FILTER(
+        Query3, CONTAINSSTRING(Query3[Work_Note], "tylertech.cxoneexpert.ai")
+    )
+)
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+
+Percentage of Cases Linked = 
+DIVIDE(
+    CALCULATE(
+        DISTINCTCOUNT(Query3[CRM_ID]),
+        'Query3',
+        Query3[Case Is Linked] = TRUE
+    ),
+    DISTINCTCOUNT(Query3[CRM_ID])
+)
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+
+Active Chat Time (min) = 
+VAR totalSeconds = Query1[msdyn_conversationactivechattimeinseconds]
+VAR minutes = INT(totalSeconds/60)
+VAR seconds = MOD(totalSeconds, 60)
+RETURN
+IF(
+    ISBLANK(totalSeconds), BLANK(), FORMAT(minutes, "00") & ":" & FORMAT(seconds, "00")
+)
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+
+SELECT 
+    i.createdon, 
+    i.tyl_lastcontactedon, 
+    i.tyl_id AS CRM_ID, 
+    i.statuscodename AS Status, 
+    n.description AS Work_Note, 
+    n.regardingobjectidname AS Title, 
+    n.createdon AS Created_On,
+    i.customeridname, 
+    n.owneridname AS Linked_By, 
+    i.owneridname AS Assigned_To,
+    i.tyl_productsuiteproductidname, 
+    i.tyl_productgroupproductidname, 
+    i.tyl_productmoduleproductidname, 
+    i.casetypecodename,
+    i.tyl_productdimensionidname,
+    i.tyl_urlforemailtemplate,
+    SUBSTRING(i.tyl_urlforemailtemplate, 10, CHARINDEX('''', i.tyl_urlforemailtemplate, 10) - 10) AS CRM_URL,
+
+    CASE 
+        WHEN n.description LIKE '%tylertech.cxoneexpert%' THEN 1 
+        ELSE 0 
+    END AS Is_Linked,
+
+    MAX(CASE WHEN n.description LIKE '%tylertech.cxoneexpert%' THEN 1 ELSE 0 END) 
+        OVER (PARTITION BY i.tyl_id) AS Case_Is_Linked,
+
+    CASE 
+        WHEN MAX(CASE WHEN n.description LIKE '%tylertech.cxoneexpert%' THEN 1 ELSE 0 END) 
+            OVER (PARTITION BY i.tyl_id) = 1 THEN 1
+        ELSE 0
+    END AS [Case Is Linked],
+
+    CASE 
+        WHEN n.description LIKE '%tylertech.cxoneexpert%' THEN 
+            RIGHT(n.description, CHARINDEX('/', REVERSE(n.description)) - 1)
+        ELSE 'None'
+    END AS Article_Title,
+
+    ROW_NUMBER() OVER (ORDER BY i.tyl_id ASC) AS Row_Index,
+
+    CASE
+        WHEN n.description LIKE '%tylertech.cxoneexpert%' THEN 1
+        WHEN n.description NOT LIKE '%tylertech.cxoneexpert%' 
+             AND MAX(CASE WHEN n.description LIKE '%tylertech.cxoneexpert%' THEN 1 ELSE 0 END)
+                 OVER (PARTITION BY i.tyl_id) = 0
+             AND ROW_NUMBER() OVER (PARTITION BY i.tyl_id ORDER BY n.createdon ASC) = 1
+        THEN 1
+        ELSE 0
+    END AS Display_Flag
+
+    FROM 
+        incident i 
+        INNER JOIN
+        tyl_note n 
+        ON i.incidentid = n.regardingobjectid
+
+    WHERE YEAR(i.tyl_lastcontactedon) >= 2025 
+    AND i.tyl_productsuiteproductidname = 'Enterprise Assessment & Tax'
+    AND i.statuscodename = 'Closed'
+    AND i.casetypecodename = 'Technical Support'
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+
+SELECT
+            msdyn_agentidname,
+            msdyn_agentid,
+            msdyn_presenceidname,
+            msdyn_starttime,
+            msdyn_endtime,
+
+            -- Duration in seconds (not status-specific)
+            DATEDIFF(SECOND, msdyn_starttime, msdyn_endtime) AS DurationSeconds,
+
+            -- Duration formatted as HH:MM
+            FORMAT(DATEADD(SECOND, DATEDIFF(SECOND, msdyn_starttime, msdyn_endtime), 0), 'HH:mm:ss') AS DurationFormatted,
+
+            -- Status-specific durations (in hours)
+            CASE 
+                WHEN msdyn_presenceidname = 'Available' 
+                THEN DATEDIFF(SECOND, msdyn_starttime, msdyn_endtime) / 3600.0 
+                ELSE 0 
+            END AS AvailableHours,
+
+            CASE 
+                WHEN msdyn_presenceidname = 'BusyDND' 
+                THEN DATEDIFF(SECOND, msdyn_starttime, msdyn_endtime) / 3600.0 
+                ELSE 0 
+            END AS BusyDNDHours,
+
+            CASE 
+                WHEN msdyn_presenceidname = 'Busy' 
+                THEN DATEDIFF(SECOND, msdyn_starttime, msdyn_endtime) / 3600.0 
+                ELSE 0 
+            END AS BusyHours,
+
+            CASE 
+                WHEN msdyn_presenceidname = 'Away' 
+                THEN DATEDIFF(SECOND, msdyn_starttime, msdyn_endtime) / 3600.0 
+                ELSE 0 
+            END AS AwayHours
+
+        FROM 
+            msdyn_agentstatushistory
+        WHERE 
+            msdyn_starttime IS NOT NULL 
+            AND msdyn_endtime IS NOT NULL
+            AND msdyn_presenceidname <> 'offline'
+
+----------------------------------------------------------------------------------------------------------------------------------------------
